@@ -1,0 +1,679 @@
+---
+title: Pikeperch analysis with Jabba
+author: Eglė Jakubavičiūtė and Asta Audzijonyte
+output: 
+  html_document: 
+    toc: yes
+    theme: cerulean
+editor_options: 
+  chunk_output_type: console
+---
+
+### libraries 
+
+JABBA requires the installation of [R](https://cran.r-project.org/) and [JAGS](https://sourceforge.net/projects/mcmc-jags/) and the following R packages that can be directly installed within R
+
+```{r libraries, include=FALSE, eval = T, warning = F, message = F, echo = F}
+
+#first load general packages
+
+# Required packages (will install and load if not already)
+list.of.packages <- 
+  c("tidyverse", 
+    "gplots", 
+    "coda", 
+    "rjags", 
+    "R2jags", 
+    "fitdistrplus",
+    "reshape"
+  )
+
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages, dependencies = T)
+lapply(list.of.packages, require, character.only = T)
+rm(list.of.packages, new.packages)
+
+## now install JABBA (uncomment lines below)
+
+#if (!require(devtools)){install.packages("devtools")}
+#devtools::install_github("jabbamodel/JABBA")
+
+
+library(JABBA)
+
+
+```
+
+### ### DATA sets ### 
+
+### all data 
+
+JABBA requires a minimum of two input comma-separated value files (.csv) in the form of catch and abundance indices. The `Catch` input file contains the time series of year and catch by weight, aggregated across fleets for the entire fishery. Missing catch years or catch values are not allowed. JABBA is formulated to accommodate abundance indices from multiple sources (i.e., fleets) in a single `cpue` file, which contains all considered abundance indices.  The first column of the `cpue` input is year, which must match the range of years provided in the Catch file. In contrast to the `Catch` input, missing abundance index values are allowed, such that different abundance indices may correspond to smaller portions of the catch time series. Optionally, an additional `se` input can be passed onto JABBA, containing standard error estimates associated with the abundance indices on a log scale. The se input is a third file, structurally identical to the `cpue` input. Alternatively, this feature can be used to apply different weighting to individual abundance indices by assigning varying coefficients of variation (CV) to each time series. If such weighting is implemented, it is advised that the CV chosen for each indexed year approximates the observed standard error on the log scale, such that the data weights are congruent with expectations as to how well the model should fit these data.  
+
+JABBA provides provides the option to use a single averaged CPUE index instead of the individual abundance indices (see *2.5.1. State-Space model for averaging of abundance indices* in Winker et al, 2018). This feature can be activated by setting `meanCPUE = TRUE`. 
+
+```{r, eval = T, warning = F, message = F, echo = F}
+rm(list = ls()) # clear memory
+
+all_data <- read.csv(file = "pikeperch23.csv", fileEncoding="UTF-8-BOM") 
+
+#inspect
+head(all_data)
+
+#which locations do we have?
+unique(all_data$Location)
+# [1] "Peipsi"         "Galtfjarden"    "Lipno"          "UpperConstance" "Curonian"       "Kaunas"         "FinArch"        "Oulujarvi"      "Kvädöfjärden"  
+```
+
+#### Curonian Lagoon
+
+```{r}
+location <- "Curonian"
+
+## select one location, here we start with Curonian Lagoon
+data <- all_data %>% filter (Location == location)
+
+catch <- data %>% dplyr::select(Year, Catch_total_com) #catches from all Curonian Lagoon
+
+cpue <- data %>% dplyr::select(Year, cpue_sc)  #stand scientific CPUE 
+se <- data %>% dplyr::select(Year, cpue_SE)  # SE of stand scientific CPUE
+
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+colnames(se) <- c("year", "se")
+
+#try to remove cpue of 2019, seems to be an outlier - deos not have any big effect
+# cpue$cpue[which(cpue$year == 2019)] <- NA
+# se$se[which(se$year == 2019)] <- NA
+
+
+```
+
+###Lake Oulujarvi
+
+```{r}
+
+location <- "Oulujarvi"
+#Catches in Lake Oulujarvi converted to tones
+
+## select one location
+data <- all_data %>% filter (Location == location)
+catch <- data %>% dplyr::select(Year, Catch_total_com)  #here we have recreational + commercial catches
+
+cpue <- data %>% dplyr::select(Year, cpue_com)  #stand commercial CPUE
+se <- data %>% dplyr::select(Year, cpue_SE)  #SE of stand commercial CPUE
+
+
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+colnames(se) <- c("year", "se")
+
+```
+
+
+
+#### Galtfjarden
+
+```{r}
+
+location <- "Galtfjarden"
+
+## select one location
+data <- all_data %>% filter (Location == location)
+catch <- data %>% dplyr::select(Year, Catch_total_com) 
+cpue <- data %>% dplyr::select(Year, cpue_sc)  # stand scientific cpue 
+se<-data %>% dplyr::select(Year, cpue_SE)
+
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+colnames(se) <- c("year", "se")
+
+```
+
+###Kvädöfjärden
+
+
+```{r}
+location <- "Kvädöfjärden"
+
+## select one location
+data <- all_data %>% filter (Location == location)
+
+catch <- data %>% dplyr::select(Year, Catch_total_com) 
+cpue <- data %>% dplyr::select(Year, cpue_sc)   #stand scientific cpue 
+se<-data %>% dplyr::select(Year, cpue_SE)
+
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+colnames(se) <- c("year", "se")
+
+```
+
+
+
+#### Peipsi
+
+```{r, eval = T, warning = F, message = F, echo = F}
+
+location <- "Peipsi"
+
+## select one location
+data <- all_data %>% filter (Location == location)
+
+catch <- data %>% dplyr::select(Year, Catch_total_com) 
+#Estonian catches only
+#catch <- data %>% dplyr::select(Year, Catch_local_com) 
+
+
+cpue <- data %>% dplyr::select(Year, cpue_sc)  #stand scientific cpue
+se<-data %>% dplyr::select(Year, cpue_SE)
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+colnames(se) <- c("year", "se")
+
+
+
+```
+
+
+#### FinArch 
+```{r, eval = T, warning = F, message = F, echo = F}
+
+location <- "FinArch"
+
+## select one location
+data <- all_data %>% filter (Location == location)
+
+catch <- data %>% dplyr::select(Year, Catch_total_com, Wgt_caught_rec) # recreational + commercial catch
+
+## we might want to run the model with two different options - with and without recreational catch 
+catch <- as.data.frame(cbind(catch$Year,(catch$Catch_total_com+catch$Wgt_caught_rec)))
+
+cpue <- data %>% dplyr::select(Year, cpue_com)
+se <- data %>% dplyr::select(Year, cpue_SE)
+
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+colnames(se) <- c("year", "se")
+
+
+
+```
+
+#### Lipno 
+
+```{r, eval = T, warning = F, message = F, echo = F}
+
+location <- "Lipno"
+
+## select one location
+data <- all_data %>% filter (Location == location)
+
+catch <- data %>% dplyr::select(Year, Wgt_caught_rec) #recreational catches only 
+cpue <- data %>% dplyr::select(Year, cpue_rec)  #recreational cpue
+
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+
+```
+
+#### UpperConstance
+
+```{r, eval = T, warning = F, message = F, echo = F}
+
+location <- "UpperConstance"
+
+## select one location
+data <- all_data %>% filter (Location == location)
+
+# use only catches and permits from Austria 
+catch <- data %>% dplyr::select(Year, Catch_local_com, Wgt_caught_rec) #com and recreat catches
+catch$total<-rowSums(catch[,c(2,3)], na.rm=T) 
+
+catch<-catch[,c(1,4)]
+
+
+#this is using total permits from Austria only (and only Austrian catch)
+cpue <- data %>% dplyr::select(Year, cpue_com_local)
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+
+
+```
+
+#### Kaunas
+
+```{r, eval = T, warning = F, message = F, echo = F}
+
+location <- "Kaunas"
+
+## select one location
+data <- all_data %>% filter (Location == location)
+
+
+#First let's only run with commercial catches
+#catch <- data %>% dplyr::select(Year, Catch_total_com) 
+
+# # #or alternatively with both commercial and recreational catches
+  catch <- data %>% dplyr::select(Year, Catch_total_com, Wgt_caught_rec) 
+  catch <- as.data.frame(cbind(catch$Year, catch$Catch_total_com+catch$Wgt_caught_rec))
+
+cpue <- data %>% dplyr::select(Year, cpue_sc)
+se <- data %>% dplyr::select(Year, cpue_SE)
+
+colnames(catch) <- c("year", "catch")
+colnames(cpue) <- c("year", "cpue")
+colnames(se) <- c("year", "cpuese")
+
+#years 1998 and 2006 and 2015 have outlier cpue. We will try to remove them. Does not have a big effect.  
+# cpue$cpue[which(cpue$year == 1998)] <- NA
+# cpue$cpue[which(cpue$year == 2006)] <- NA
+# cpue$cpue[which(cpue$year == 2015)] <- NA
+# 
+# cpue$cpue[which(cpue$year == 2007)] <- NA
+# 
+# 
+# se$cpuese[which(se$year == 1998)] <- NA
+# se$cpuese[which(se$year == 2006)] <- NA
+# se$cpuese[which(se$year == 2015)] <- NA
+# 
+# se$cpuese[which(se$year == 2007)] <- NA
+# 
+# 
+# cpue$cpue[which(cpue$year == 1999)] <- NA
+# se$cpuese[which(se$year == 1999)] <- NA
+```
+
+
+### ### SETUP AND RUN ### 
+
+### Setup model parameters
+
+For surplus production models we basically need carrying capacity K and population growth rate r
+Since K and r are never known, a common approach is to set priors for K at 3-10 times the maximum catch in the catch time series, whereas r is assumed to be lognormally distributed with mean r of 0.2. But you can set it differently. 
+Let's also make projections into the future assuming that catch in the next 10 years will stay the same as the last year's catch, be 50% smaller and 50% larger
+
+```{r, eval = T, warning = F, message = F, echo = F}
+
+# K range will be set is 3-10 times of maximum catch 
+max(catch$catch)
+Kmin <- as.numeric(2*max(catch$catch))
+Kmax <- as.numeric(6*max(catch$catch))
+
+#last year's catch
+lastcatch <- round((1*as.numeric(catch[nrow(catch),][2])),0)
+#Set the TAC_range
+TAC_range <- c(0.5*lastcatch, lastcatch, 1.5*lastcatch)
+
+#when to start projections with the new TAC range? Usually from the year after the last year
+TAC_year <- catch$year[nrow(catch)] +1
+
+
+
+```
+
+#### setup: Schaeffer
+
+```{r}
+
+scenario_name = "Schaeffer_both"
+
+input_both_sch <- build_jabba(
+  catch = catch,
+  cpue = cpue,
+  se = NULL,
+  assessment = location,
+  scenario = scenario_name,
+  model.type = c("Schaefer", "Fox", "Pella", "Pella_m") [1],  # with [1] we select the first option
+  add.catch.CV = TRUE,
+  catch.cv = 0.1,
+  catch.error = c("random", "under") [1],          #"under" mean directional underreporting
+  Plim = 0.25,                                    #limit of biomass where recruitment can become impaired Plim = Blim/K
+  r.dist = c("lnorm", "range")[1],
+  r.prior = c(0.25, 0.2),             
+  K.dist = c("lnorm", "range")[2],
+  K.prior = c(Kmin,Kmax),
+  psi.dist = c("lnorm", "beta")[1],
+  psi.prior = c(0.05, 0.1),
+  b.prior = c(FALSE, 0.3, NA, c("bk", "bbmsy", "ffmsy")[1]),
+  BmsyK = 0.4,
+  shape.CV = 0.3,
+  sets.q = 1:(ncol(cpue) - 1),
+  sigma.est = TRUE,
+  sets.var = 1:(ncol(cpue) - 1),
+  fixed.obsE = 0.01,
+  #fixed.obsE = ifelse(is.null(se), 0.1, 0.001),
+  sigma.proc = TRUE,
+  proc.dev.all = TRUE,
+  igamma = c(4, 0.01),
+  projection = TRUE,
+  TACs = TAC_range, # we set a range in here
+  #TACs = c(350,1000), # we set a range in here
+  TACint = NULL,
+  imp.yr = TAC_year,        
+  pyrs = 10,                 
+  P_bound = c(0.02, 1.3),
+  sigmaobs_bound = 1,
+  sigmaproc_bound = 0.2,
+  q_bounds = c(10^-30, 1000),
+  K_bounds = c(0.01, 10^10),
+  #KOBE.plot = TRUE,
+  #KOBE.type = c("ICCAT", "IOTC")[2],
+  #Biplot = FALSE,
+  harvest.label = c("Hmsy", "Fmsy")[2],
+  catch.metric = "(t)"
+)
+
+```
+
+#### Schaefer with CPUE SE
+
+```{r}
+
+scenario_name = "Schaeffer_both"
+
+input_both_sch <- build_jabba(
+  catch = catch,
+  cpue = cpue,
+  se = se,
+  assessment = location,
+  scenario = scenario_name,
+  model.type = c("Schaefer", "Fox", "Pella", "Pella_m") [1],  # with [1] we select the first option
+  add.catch.CV = TRUE,
+  catch.cv = 0.1,
+  catch.error = c("random", "under") [1],          
+  Plim = 0.25,                                    
+  r.dist = c("lnorm", "range")[1],
+  r.prior = c(0.25, 0.2),             
+  K.dist = c("lnorm", "range")[2],
+  K.prior = c(Kmin,Kmax),
+  psi.dist = c("lnorm", "beta")[1],
+  psi.prior = c(0.05, 0.1),
+  b.prior = c(FALSE, 0.3, NA, c("bk", "bbmsy", "ffmsy")[1]),
+  BmsyK = 0.4,
+  shape.CV = 0.3,
+  sets.q = 1:(ncol(cpue) - 1),
+  sigma.est = TRUE,
+  sets.var = 1:(ncol(cpue) - 1),
+  #fixed.obsE = 0.01,
+  fixed.obsE = ifelse(is.null(se), 0.1, 0.001),
+  sigma.proc = TRUE,
+  proc.dev.all = TRUE,
+  igamma = c(4, 0.01),
+  projection = TRUE,
+  TACs = TAC_range, # we set a range in here
+  #TACs = c(350,1000), # we set a range in here
+  TACint = NULL,
+  imp.yr = TAC_year,        #when does TAC start
+  pyrs = 10,            #how many years to project     
+  P_bound = c(0.02, 1.3),
+  sigmaobs_bound = 1,
+  sigmaproc_bound = 0.2,
+  q_bounds = c(10^-30, 1000),
+  K_bounds = c(0.01, 10^10),
+  #KOBE.plot = TRUE,
+  #KOBE.type = c("ICCAT", "IOTC")[2],
+  #Biplot = FALSE,
+  harvest.label = c("Hmsy", "Fmsy")[2],
+  catch.metric = "(t)"
+)
+
+```
+
+#### setup: Pella
+
+```{r}
+scenario_name = "Pella_both"
+
+input_both_pella <- build_jabba(
+  catch = catch,
+  cpue = cpue,
+  se = NULL,
+  assessment = location,
+  scenario = scenario_name,
+  model.type = c("Schaefer", "Fox", "Pella", "Pella_m") [3],  
+  add.catch.CV = TRUE,
+  catch.cv = 0.1,
+  catch.error = c("random", "under") [1],          
+  Plim = 0.25,                                    
+  r.dist = c("lnorm", "range")[1],
+  r.prior = c(0.25, 0.2),            
+  K.dist = c("lnorm", "range")[2],
+  K.prior = c(Kmin,Kmax),
+  psi.dist = c("lnorm", "beta"),
+  psi.prior = c(0.7, 0.2),
+  b.prior = c(FALSE, 0.3, NA, c("bk", "bbmsy", "ffmsy")[1]),
+  BmsyK = 0.65,
+  shape.CV = 0.3,
+  sets.q = 1:(ncol(cpue) - 1),
+  sigma.est = TRUE,
+  sets.var = 1:(ncol(cpue) - 1),
+  fixed.obsE = 0.01,
+  #fixed.obsE = ifelse(is.null(se), 0.1, 0.001),
+  sigma.proc = TRUE,
+  proc.dev.all = TRUE,
+  igamma = c(4, 0.01),
+  projection = TRUE,
+  TACs = TAC_range, # we set a range in here
+  #TACs = c(350,1000), # we set a range in here
+  TACint = NULL,
+  imp.yr = TAC_year,        #when does TAC start
+  pyrs = 10,            #how many years to project     
+  P_bound = c(0.02, 1.3),
+  sigmaobs_bound = 1,
+  sigmaproc_bound = 0.2,
+  q_bounds = c(10^-30, 1000),
+  K_bounds = c(0.01, 10^10),
+  harvest.label = c("Hmsy", "Fmsy")[2],
+  catch.metric = "(t)"
+)
+
+```
+
+#### Pella with CPUE SE
+
+```{r}
+scenario_name = "Pella_both"
+
+input_both_pella <- build_jabba(
+  catch = catch,
+  cpue = cpue,
+  se = se,
+  assessment = location,
+  scenario = scenario_name,
+  model.type = c("Schaefer", "Fox", "Pella", "Pella_m") [3],  
+  add.catch.CV = TRUE,
+  catch.cv = 0.1,
+  catch.error = c("random", "under") [1],          
+  Plim = 0.25,                                    
+  r.dist = c("lnorm", "range")[1],
+  r.prior = c(0.25, 0.2),             
+  K.dist = c("lnorm", "range")[2],
+  K.prior = c(Kmin,Kmax),
+  psi.dist = c("lnorm", "beta"),
+  psi.prior = c(0.2, 0.2),
+  b.prior = c(FALSE, 0.3, NA, c("bk", "bbmsy", "ffmsy")[1]),
+  BmsyK = 0.65,  ## Inflection point of the surplus production curve
+  shape.CV = 0.3, 
+  sets.q = 1:(ncol(cpue) - 1),
+  sigma.est = TRUE,
+  sets.var = 1:(ncol(cpue) - 1),
+  #fixed.obsE = 0.01,
+  fixed.obsE = ifelse(is.null(se), 0.1, 0.001),
+  sigma.proc = TRUE,
+  proc.dev.all = TRUE,
+  igamma = c(4, 0.01),
+  projection = TRUE,
+  TACs = TAC_range, # we set a range in here
+  #TACs = c(350,1000), # we set a range in here
+  TACint = NULL,
+  imp.yr = TAC_year,        #when does TAC start
+  pyrs = 10,            #how many years to project     
+  P_bound = c(0.02, 1.3),
+  sigmaobs_bound = 1,
+  sigmaproc_bound = 0.2,
+  q_bounds = c(10^-30, 1000),
+  K_bounds = c(0.01, 10^10),
+  harvest.label = c("Hmsy", "Fmsy")[2],
+  catch.metric = "(t)"
+)
+
+```
+
+
+### Run: Schaeffer
+
+We will run Schaefer, Fox and Pella scenarios. They make different assumptions about density dependence. We run them with identical parameters and priors, but we expect to get different posterior estimates, because they assume a slighly differnet production curve
+
+```{r}
+#note this will save an .RData object 
+
+run_both_sch <- fit_jabba(
+  input_both_sch,
+  ni = 30000,
+  nt = 5,
+  nb = 5000,
+  nc = 2,
+  init.values = FALSE,
+  init.K = NULL,
+  init.r = NULL,
+  init.q = NULL,
+  peels = NULL,
+  do.ppc=TRUE,
+  save.all = FALSE,
+  save.trj = TRUE,
+  save.jabba = TRUE,  #will save the RData object
+  save.csvs = TRUE,
+  output.dir = location,  ## make sure you create a folder in your working directory to save outputs
+  quickmcmc = TRUE,
+  verbose=TRUE
+)
+```
+
+### Run: Pella
+
+```{r}
+run_both_pella <- fit_jabba(
+  input_both_pella,
+  ni = 30000,
+  nt = 5,
+  nb = 5000,
+  nc = 2,
+  init.values = FALSE,
+  init.K = NULL,
+  init.r = NULL,
+  init.q = NULL,
+  peels = NULL,
+  save.all = FALSE,
+  save.trj = FALSE,
+  save.jabba = TRUE,  #will save the RData object
+  save.csvs = TRUE,
+  output.dir = location,  ## make sure you create a folder in your working directory to save outputs
+  quickmcmc = TRUE
+)
+
+```
+
+### ### MAKE OUTPUTS ### 
+
+### all output plots into directory
+
+You can explore these plots from the working directory
+
+```{r}
+
+jabba_plots(run_both_sch, output.dir = location)
+
+jbplot_summary(run_both_sch)
+
+#plots the production vs biomass (Walters et al 2008) and color-coded kobe phases
+jbplot_spdyn(run_both_sch)
+
+#plots standardized residuals for all indices as boxplot with a loess showing systematic trends
+jbplot_stdresiduals(run_both_sch)
+  
+#Residual diagnostics with runs test p-value and 3xsigma limits
+jbplot_runstest(run_both_sch)
+
+#Residual diagnostics with runs test p-value
+jbrunstest(run_both_sch, index = NULL, mixing = "less")
+
+
+#jbplot_prj(run_both_sch)
+  
+  
+
+```
+
+
+### summary plot in pdf
+
+If you want to generate your summary plot 
+
+```{r}
+#load the data file
+
+ load(file = paste0(location,"/",location,"_Schaeffer_both_jabba.rdata"))
+
+
+ #rename it, to not get confused
+ model_out <- jabba
+ 
+
+ #make a name for a summary pdf file 
+pdf(file = paste0(location,"/",location,"_summary.pdf"), width = 11, height = 12)
+
+# plot various outputs 
+
+par(mfrow=c(3,2),mar = c(5, 5, 4, 3))
+jbplot_trj(model_out,type="BBmsy",add=T)
+jbplot_trj(model_out,type="F",add=T)
+#jbplot_prj(model_out, type = c("BB0", "BBmsy", "FFmsy")[1], add = T)
+# jbplot_trj(model_out,type="BBmsy",add=T)
+# jbplot_trj(model_out,type="FFmsy",add=T)
+jbplot_catch(model_out, add = T)
+jbplot_spphase(model_out,add=T)
+jbplot_kobe(model_out, add = T)
+
+dev.off()
+
+
+
+```
+
+#Pella outputs
+
+```{r}
+
+jabba_plots(run_both_pella, output.dir = location)
+
+
+load(file = paste0(location,"/",location,"_Pella_both_jabba.rdata"))
+
+
+
+ #rename it, to not get confused
+ model_out <- jabba
+ 
+
+ #make a name for a summary pdf file 
+pdf(file = paste0(location,"/",location,"_summary.pdf"), width = 11, height = 12)
+
+# plot various outputs 
+
+par(mfrow=c(3,2),mar = c(5, 5, 4, 3))
+jbplot_trj(model_out,type="BBmsy",add=T)
+jbplot_trj(model_out,type="F",add=T)
+#jbplot_prj(model_out, type = c("BB0", "BBmsy", "FFmsy")[1], add = T)
+# jbplot_trj(model_out,type="BBmsy",add=T)
+# jbplot_trj(model_out,type="FFmsy",add=T)
+jbplot_catch(model_out, add = T)
+jbplot_spphase(model_out,add=T)
+jbplot_kobe(model_out, add = T)
+
+dev.off()
+
+
+```
+
+
